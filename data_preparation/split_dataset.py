@@ -71,14 +71,14 @@ def create_yaml_config(dataset_dir):
     dataset_dir = Path(dataset_dir).resolve()
     yaml_content =f"""path :{dataset_dir}
 train: images/train
-val:images/val
-test:images/test
+val: images/val
+test: images/test
 
 names:
-    0:ball
+    0: ball
 
 
-nc:1
+nc: 1
 """
 
     yaml_path = dataset_dir/"tennis_ball.yaml"
