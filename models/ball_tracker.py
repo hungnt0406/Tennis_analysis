@@ -6,6 +6,7 @@ Detects tennis ball and smooths trajectory using Kalman filter.
 
 import cv2
 import numpy as np
+import torch
 from ultralytics import YOLO
 from typing import List, Tuple, Optional
 from collections import deque
@@ -27,10 +28,27 @@ class BallTracker:
             trajectory_length: Number of past positions to keep for visualization
         """
         self.model = YOLO(model_path)
+        
+        # Auto-detect device
+        if torch.backends.mps.is_available():
+            self.model.to('mps')
+            print("BallTracker using device: mps")
+        elif torch.cuda.is_available():
+            self.model.to('cuda')
+            print("BallTracker using device: cuda")
+        else:
+            print("BallTracker using device: cpu")
+            
         self.conf_threshold = conf_threshold
         # Kalman filter removed as requested
         self.trajectory = deque(maxlen=trajectory_length)
         self.last_detection = None
+        
+        # Filtering parameters
+        self.spatial_threshold = 30  # Max pixel jump allowed
+        self.static_threshold = 1    # Max movement for static object check
+        self.consecutive_frames = 0   # Counter for persistence
+        self.pending_trajectory = deque() # Buffer for initial detections
     
     def detect(self, frame: np.ndarray) -> Optional[dict]:
         """
@@ -66,33 +84,67 @@ class BallTracker:
     
     def track(self, frame: np.ndarray) -> Optional[dict]:
         """
-        Track ball using YOLO detection only (no Kalman filter).
+        Track ball using YOLO detection with filtering logic.
         
         Args:
             frame: BGR image
         
         Returns:
-            Tracked position dict with:
-                - center: (x, y) position
-                - confidence: detection confidence
-                - detected: True
-                - velocity: None (not calculated without filter)
+            Tracked position dict or None
         """
         detection = self.detect(frame)
         
-        if detection is not None:
+        # If no detection, reset consecutive frames and clear buffer
+        if detection is None:
+            self.consecutive_frames = 0
+            self.pending_trajectory.clear()
+            return None
+
+        current_center = detection['center']
+        
+        # 1. Spatial Consistency: Check jump from last CONFIRMED detection
+        if self.last_detection:
+            last_center = self.last_detection['center']
+            dist = np.sqrt((current_center[0] - last_center[0])**2 + (current_center[1] - last_center[1])**2)
+            if dist > self.spatial_threshold:
+                # Too far! Reset tracking. Treat as new object.
+                self.consecutive_frames = 0
+                self.pending_trajectory.clear()
+                self.trajectory.clear()
+                self.last_detection = None
+        
+        self.consecutive_frames += 1
+        self.pending_trajectory.append(current_center)
+        
+        # 2. Static Object Rejection: Check if movement is negligible over 5 frames
+        # Use last 5 points from pending buffer
+        if len(self.pending_trajectory) >= 5:
+            # Convert last 5 points to numpy array
+            pts = np.array(list(self.pending_trajectory)[-5:])
+            # Calculate spread (diagonal of bounding box of points)
+            spread = np.max(pts, axis=0) - np.min(pts, axis=0)
+            diagonal = np.sqrt(np.sum(spread**2))
+            
+            if diagonal < self.static_threshold:
+                # Static object detected! Reset.
+                self.consecutive_frames = 0
+                self.pending_trajectory.clear()
+                return None
+        
+        # 3. Trajectory Entry Bar: Require 2 consecutive frames(not needed anymore)
+        if self.consecutive_frames >= 0:
             result = {
                 'center': detection['center'],
                 'raw_center': detection['center'],
                 'bbox': detection['bbox'],
                 'confidence': detection['confidence'],
                 'detected': True,
-                'velocity': None  # Velocity not available without Kalman filter
+                'velocity': None
             }
             self.last_detection = result
             self.trajectory.append(result['center'])
             return result
-        
+            
         return None
     
     def get_trajectory(self) -> List[Tuple[int, int]]:
@@ -121,14 +173,16 @@ class BallTracker:
         annotated = frame.copy()
         
         # Draw trajectory
-        if draw_trajectory and len(self.trajectory) > 1:
+        if draw_trajectory and self.trajectory:
             points = list(self.trajectory)
-            for i in range(1, len(points)):
+            for i, point in enumerate(points):
                 # Fade color based on age
-                alpha = i / len(points)
-                color = (0, int(255 * alpha), int(255 * (1 - alpha)))
-                thickness = max(1, int(3 * alpha))
-                cv2.line(annotated, points[i-1], points[i], color, thickness)
+                alpha = (i + 1) / len(points)
+                # BGR: Yellow is (0, 255, 255)
+                # Start faint, end strong
+                color = (0, int(255 * alpha), int(255 * alpha))
+                radius = 3 # Fixed radius for dots
+                cv2.circle(annotated, point, radius, color, -1)
         
         if ball is None:
             return annotated

@@ -5,6 +5,7 @@ Uses YOLOv11m pretrained on COCO dataset to detect and track players (class 0 = 
 """
 
 import cv2
+import torch
 from ultralytics import YOLO
 from typing import List, Tuple, Optional
 import numpy as np
@@ -20,6 +21,17 @@ class PlayerTracker:
             conf_threshold: Confidence threshold for detections
         """
         self.model = YOLO(model_path)
+        
+        # Auto-detect device
+        if torch.backends.mps.is_available():
+            self.model.to('mps')
+            print("PlayerTracker using device: mps")
+        elif torch.cuda.is_available():
+            self.model.to('cuda')
+            print("PlayerTracker using device: cuda")
+        else:
+            print("PlayerTracker using device: cpu")
+            
         self.conf_threshold = conf_threshold
         self.class_id = 0  # COCO class 0 = person
     
